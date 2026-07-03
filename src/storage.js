@@ -4,7 +4,7 @@ import { sampleResume } from './data.js';
 export const STORAGE_KEY = 'resume-builder-state';
 export const WORKSPACE_KEY = 'resume-builder-workspace';
 export const WORKSPACE_V2_KEY = 'resume-builder-workspace-v2';
-export const AI_USE_PRICE_YUAN = '3.99';
+export const AI_USE_PRICE_YUAN = '2.98';
 
 export const applicationStatuses = ['想投', '已生成', '已投递', '面试中', '已结束'];
 
