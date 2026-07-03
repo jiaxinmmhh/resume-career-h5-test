@@ -5,6 +5,12 @@ import {
   generateJobMaterials,
   generateResumeForJob,
 } from './ai.js';
+import {
+  createBackendOrder,
+  confirmBackendOrder,
+  hasBackend,
+  runBackendAiAction,
+} from './backend.js';
 import { createImportDraft, readTextFile } from './import.js';
 import {
   addItem,
@@ -38,6 +44,7 @@ let activeView = 'dashboard';
 let importState = { status: 'idle', message: '', draft: null };
 let aiState = { status: 'idle', message: '' };
 let jobDraft = { company: '', title: '', location: '', jd: '' };
+let checkoutState = { order: null, adminToken: '' };
 
 function commit(nextWorkspace) {
   workspace = nextWorkspace;
@@ -375,10 +382,20 @@ function renderMaterialsView() {
 }
 
 function renderSettings() {
+  const backendEnabled = hasBackend(workspace.settings);
   return `
     <section class="settings-box">
       <label>
-        <span>DeepSeek API Key</span>
+        <span>后端 API 地址</span>
+        <input data-setting="backendUrl" value="${escapeHtml(workspace.settings.backendUrl || '')}" placeholder="例如：http://localhost:5190" />
+      </label>
+      <label>
+        <span>用户标识</span>
+        <input data-setting="customerId" value="${escapeHtml(workspace.settings.customerId || '')}" />
+      </label>
+      <p class="hint">${backendEnabled ? '已启用后端模式：AI Key 和次数由后端管理。' : '未填写后端地址时，会使用前端测试模式。'}</p>
+      <label>
+        <span>DeepSeek API Key（仅前端测试模式）</span>
         <input type="password" data-setting="apiKey" value="${escapeHtml(workspace.settings.apiKey)}" placeholder="sk-..." autocomplete="off" />
       </label>
       <label>
@@ -395,6 +412,7 @@ function renderSettings() {
 
 function renderBillingBox(variant = 'normal') {
   const billing = getBillingState(workspace);
+  const backendEnabled = hasBackend(workspace.settings);
   const statusText = billing.totalAvailable > 0
     ? `当前可用 ${billing.totalAvailable} 次（免费 ${billing.freeCredits} 次，已购 ${billing.paidCredits} 次）`
     : `免费试用已用完，继续使用 ${billing.priceYuan} 元/次`;
@@ -404,9 +422,19 @@ function renderBillingBox(variant = 'normal') {
       <div>
         <p class="eyebrow">试用与收费</p>
         <strong>免费试用 1 次，之后 ${AI_USE_PRICE_YUAN} 元/次</strong>
-        <span>${escapeHtml(statusText)}</span>
+        <span>${backendEnabled ? '后端模式：次数以后端账户为准。' : escapeHtml(statusText)}</span>
+        ${checkoutState.order ? `<span>待支付订单：${escapeHtml(checkoutState.order.id)} · ${escapeHtml(checkoutState.order.amountYuan)} 元</span>` : ''}
       </div>
-      <button class="secondary-button" data-action="unlock-paid-credit">已付款，解锁 1 次</button>
+      <div class="billing-actions">
+        <button class="secondary-button" data-action="${backendEnabled ? 'create-backend-order' : 'unlock-paid-credit'}">
+          ${backendEnabled ? `购买 1 次 ${AI_USE_PRICE_YUAN} 元` : '已付款，解锁 1 次'}
+        </button>
+        ${
+          backendEnabled && checkoutState.order
+            ? `<button class="secondary-button" data-action="confirm-backend-order">开发确认支付</button>`
+            : ''
+        }
+      </div>
     </section>
   `;
 }
@@ -787,6 +815,32 @@ app.addEventListener('click', async (event) => {
     commit(addPaidCredit(workspace, 1));
   }
 
+  if (action === 'create-backend-order') {
+    try {
+      checkoutState = {
+        ...checkoutState,
+        order: await createBackendOrder(workspace.settings),
+      };
+      aiState = { status: 'ready', message: `订单已创建：${checkoutState.order.amountYuan} 元。真实支付接入后这里会跳转收银台。` };
+    } catch (error) {
+      aiState = { status: 'error', message: error.message || '创建订单失败。' };
+    }
+    render();
+  }
+
+  if (action === 'confirm-backend-order' && checkoutState.order) {
+    try {
+      checkoutState = {
+        ...checkoutState,
+        order: await confirmBackendOrder(workspace.settings, checkoutState.order.id, checkoutState.adminToken),
+      };
+      aiState = { status: 'ready', message: '后端已确认支付，并增加 1 次可用额度。' };
+    } catch (error) {
+      aiState = { status: 'error', message: error.message || '确认支付失败。' };
+    }
+    render();
+  }
+
   if (action === 'import-text') {
     const text = document.querySelector('#paste-box')?.value || '';
     if (text.trim()) {
@@ -817,6 +871,11 @@ app.addEventListener('click', async (event) => {
 });
 
 async function runAiAction(action) {
+  if (hasBackend(workspace.settings)) {
+    await runBackendAction(action);
+    return;
+  }
+
   if (!workspace.settings.apiKey?.trim()) {
     aiState = { status: 'error', message: '请先填写 DeepSeek API Key，再使用 AI 功能。' };
     render();
@@ -891,6 +950,55 @@ async function runAiAction(action) {
     }
   } catch (error) {
     aiState = { status: 'error', message: error.message || 'AI 请求失败，请检查 API Key 或网络。' };
+  }
+
+  render();
+}
+
+async function runBackendAction(action) {
+  const job = getActiveJob(workspace);
+  aiState = { status: 'loading', message: '正在请求后端服务...' };
+  render();
+
+  try {
+    const response = await runBackendAiAction(workspace.settings, action, {
+      profile: workspace.masterProfile,
+      job,
+      resume: job.artifacts.resume,
+      mode: workspace.settings.defaultMode,
+    });
+    const result = response.result;
+
+    if (action === 'analyze-job') {
+      updateActiveJob({ matchReport: result });
+      aiState = { status: 'ready', message: '后端已生成匹配报告，并完成次数扣减。' };
+    }
+
+    if (action === 'generate-resume') {
+      updateActiveJob({
+        artifacts: { ...job.artifacts, resume: result },
+        applicationStatus: job.applicationStatus === '想投' ? '已生成' : job.applicationStatus,
+      });
+      aiState = { status: 'ready', message: '后端已生成岗位定制简历，并完成次数扣减。' };
+    }
+
+    if (action === 'generate-materials') {
+      updateActiveArtifacts(result);
+      aiState = { status: 'ready', message: '后端已生成求职沟通材料，并完成次数扣减。' };
+    }
+
+    if (action === 'generate-interview') {
+      updateActiveArtifacts({ interviewPrep: result });
+      aiState = { status: 'ready', message: '后端已生成面试准备卡片，并完成次数扣减。' };
+    }
+  } catch (error) {
+    aiState = {
+      status: 'error',
+      message:
+        error.status === 402
+          ? `后端提示次数不足，请按 ${AI_USE_PRICE_YUAN} 元/次购买后继续。`
+          : error.message || '后端 AI 请求失败。',
+    };
   }
 
   render();

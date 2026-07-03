@@ -115,6 +115,8 @@ export function createDefaultWorkspaceV2(sourceResume = sampleResume) {
     jobs: [defaultJob],
     settings: {
       apiKey: '',
+      backendUrl: '',
+      customerId: createId('customer'),
       defaultMode: 'targeted',
       style: { ...sourceResume.style },
       billing: normalizeBilling(),
@@ -143,6 +145,8 @@ function normalizeWorkspaceV2(value) {
     jobs,
     settings: {
       apiKey: value.settings?.apiKey || '',
+      backendUrl: value.settings?.backendUrl || '',
+      customerId: value.settings?.customerId || createId('customer'),
       defaultMode: value.settings?.defaultMode || 'targeted',
       style: { ...(value.settings?.style || value.masterProfile.style || sampleResume.style) },
       billing: normalizeBilling(value.settings?.billing),
