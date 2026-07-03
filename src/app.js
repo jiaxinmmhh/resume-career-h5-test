@@ -19,10 +19,14 @@ import {
   updateStyle,
 } from './state.js';
 import {
+  addPaidCredit,
+  AI_USE_PRICE_YUAN,
   applicationStatuses,
+  consumeAiCredit,
   createJob,
   deleteJob,
   getActiveJob,
+  getBillingState,
   loadCareerWorkspace,
   saveCareerWorkspace,
   upsertJob,
@@ -139,6 +143,8 @@ function renderDashboard() {
         </div>
       </div>
 
+      ${renderBillingBox()}
+
       <div class="metric-grid">
         <article><strong>${jobCount}</strong><span>岗位</span></article>
         <article><strong>${generatedCount}</strong><span>已生成材料</span></article>
@@ -154,6 +160,7 @@ function renderDashboard() {
           <span class="status-pill">${escapeHtml(activeJob.applicationStatus)}</span>
         </div>
         ${renderMatchReport(activeJob)}
+        ${renderBillingBox('compact')}
         <div class="quick-actions">
           <button class="secondary-button" data-action="switch-view" data-view="materials">生成投递材料</button>
           <button class="secondary-button" data-action="switch-view" data-view="interview">准备面试</button>
@@ -305,6 +312,7 @@ function renderJobEditor(job) {
       ${field('岗位名', job.jobInfo.title, 'activeJob.title')}
       ${field('地点', job.jobInfo.location, 'activeJob.location')}
       ${field('岗位 JD', job.jobInfo.jd, 'activeJob.jd', true)}
+      ${renderBillingBox('compact')}
       <button class="primary-button full" data-action="analyze-job" ${aiState.status === 'loading' ? 'disabled' : ''}>AI 看匹配度</button>
       ${renderAiMessage()}
       ${renderMatchReport(job)}
@@ -347,6 +355,7 @@ function renderMaterialsView() {
           </div>
         </div>
         ${renderSettings()}
+        ${renderBillingBox()}
         <section class="step-card">
           <h3>1. 生成定制简历</h3>
           <p class="hint">不会覆盖主素材，只保存到当前岗位。</p>
@@ -380,6 +389,24 @@ function renderSettings() {
           <option value="concise" ${workspace.settings.defaultMode === 'concise' ? 'selected' : ''}>压缩一页</option>
         </select>
       </label>
+    </section>
+  `;
+}
+
+function renderBillingBox(variant = 'normal') {
+  const billing = getBillingState(workspace);
+  const statusText = billing.totalAvailable > 0
+    ? `当前可用 ${billing.totalAvailable} 次（免费 ${billing.freeCredits} 次，已购 ${billing.paidCredits} 次）`
+    : `免费试用已用完，继续使用 ${billing.priceYuan} 元/次`;
+
+  return `
+    <section class="billing-box ${variant === 'compact' ? 'compact' : ''}">
+      <div>
+        <p class="eyebrow">试用与收费</p>
+        <strong>免费试用 1 次，之后 ${AI_USE_PRICE_YUAN} 元/次</strong>
+        <span>${escapeHtml(statusText)}</span>
+      </div>
+      <button class="secondary-button" data-action="unlock-paid-credit">已付款，解锁 1 次</button>
     </section>
   `;
 }
@@ -420,6 +447,7 @@ function renderInterviewView() {
         </div>
         <button class="primary-button" data-action="generate-interview" ${aiState.status === 'loading' ? 'disabled' : ''}>生成面试准备</button>
       </div>
+      ${renderBillingBox()}
       ${renderAiMessage()}
       ${
         questions.length
@@ -754,6 +782,11 @@ app.addEventListener('click', async (event) => {
 
   if (action === 'delete-active-job') commit(deleteJob(workspace, workspace.activeJobId));
 
+  if (action === 'unlock-paid-credit') {
+    aiState = { status: 'ready', message: `已解锁 1 次付费使用。本次价格 ${AI_USE_PRICE_YUAN} 元。` };
+    commit(addPaidCredit(workspace, 1));
+  }
+
   if (action === 'import-text') {
     const text = document.querySelector('#paste-box')?.value || '';
     if (text.trim()) {
@@ -784,8 +817,27 @@ app.addEventListener('click', async (event) => {
 });
 
 async function runAiAction(action) {
+  if (!workspace.settings.apiKey?.trim()) {
+    aiState = { status: 'error', message: '请先填写 DeepSeek API Key，再使用 AI 功能。' };
+    render();
+    return;
+  }
+
+  const credit = consumeAiCredit(workspace);
+  if (!credit.allowed) {
+    aiState = {
+      status: 'error',
+      message: `免费试用已用完。继续使用 AI 功能需要按 ${AI_USE_PRICE_YUAN} 元/次付费。`,
+    };
+    render();
+    return;
+  }
+
   const job = getActiveJob(workspace);
-  aiState = { status: 'loading', message: 'AI 正在处理...' };
+  aiState = {
+    status: 'loading',
+    message: credit.reason === 'free' ? '正在使用免费试用次数...' : `正在使用 1 次付费次数（${AI_USE_PRICE_YUAN} 元/次）...`,
+  };
   render();
 
   try {
@@ -795,6 +847,7 @@ async function runAiAction(action) {
         profile: workspace.masterProfile,
         job,
       });
+      workspace = credit.workspace;
       updateActiveJob({ matchReport });
       aiState = { status: 'ready', message: '匹配报告已生成。' };
     }
@@ -806,6 +859,7 @@ async function runAiAction(action) {
         job,
         mode: workspace.settings.defaultMode,
       });
+      workspace = credit.workspace;
       updateActiveJob({
         artifacts: { ...job.artifacts, resume },
         applicationStatus: job.applicationStatus === '想投' ? '已生成' : job.applicationStatus,
@@ -820,6 +874,7 @@ async function runAiAction(action) {
         job,
         resume: job.artifacts.resume,
       });
+      workspace = credit.workspace;
       updateActiveArtifacts(materials);
       aiState = { status: 'ready', message: '求职沟通材料已生成。' };
     }
@@ -830,6 +885,7 @@ async function runAiAction(action) {
         job,
         resume: job.artifacts.resume,
       });
+      workspace = credit.workspace;
       updateActiveArtifacts({ interviewPrep });
       aiState = { status: 'ready', message: '面试准备卡片已生成。' };
     }

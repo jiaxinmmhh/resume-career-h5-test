@@ -224,6 +224,43 @@ button:disabled {
   padding: 12px;
 }
 
+.billing-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  padding: 14px;
+}
+
+.billing-box.compact {
+  margin: 12px 0;
+}
+
+.billing-box strong,
+.billing-box span {
+  display: block;
+}
+
+.billing-box strong {
+  color: #111827;
+  margin-bottom: 4px;
+}
+
+.billing-box span {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.billing-box .secondary-button {
+  flex: 0 0 auto;
+  border-color: #1d4ed8;
+  color: #1d4ed8;
+}
+
 .empty-state {
   border: 1px dashed #cbd5e1;
   border-radius: 8px;
@@ -975,6 +1012,11 @@ select:focus {
   .report-grid,
   .question-grid {
     grid-template-columns: 1fr;
+  }
+
+  .billing-box {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .panel,

@@ -4,6 +4,7 @@ import { sampleResume } from './data.js';
 export const STORAGE_KEY = 'resume-builder-state';
 export const WORKSPACE_KEY = 'resume-builder-workspace';
 export const WORKSPACE_V2_KEY = 'resume-builder-workspace-v2';
+export const AI_USE_PRICE_YUAN = '3.99';
 
 export const applicationStatuses = ['想投', '已生成', '已投递', '面试中', '已结束'];
 
@@ -59,6 +60,14 @@ function isValidJob(value) {
   return Boolean(value && value.id && value.jobInfo && typeof value.jobInfo === 'object');
 }
 
+function normalizeBilling(billing = {}) {
+  return {
+    freeTrialUsed: Boolean(billing.freeTrialUsed),
+    paidCredits: Math.max(0, Number(billing.paidCredits) || 0),
+    priceYuan: billing.priceYuan || AI_USE_PRICE_YUAN,
+  };
+}
+
 export function createJob({
   company = '',
   title = '新岗位',
@@ -108,6 +117,7 @@ export function createDefaultWorkspaceV2(sourceResume = sampleResume) {
       apiKey: '',
       defaultMode: 'targeted',
       style: { ...sourceResume.style },
+      billing: normalizeBilling(),
     },
   };
 }
@@ -135,6 +145,7 @@ function normalizeWorkspaceV2(value) {
       apiKey: value.settings?.apiKey || '',
       defaultMode: value.settings?.defaultMode || 'targeted',
       style: { ...(value.settings?.style || value.masterProfile.style || sampleResume.style) },
+      billing: normalizeBilling(value.settings?.billing),
     },
   };
 }
@@ -216,6 +227,77 @@ export function updateCareerWorkspace(workspace, updates) {
   return {
     ...workspace,
     ...updates,
+  };
+}
+
+export function getBillingState(workspace) {
+  const billing = normalizeBilling(workspace.settings?.billing);
+  const freeCredits = billing.freeTrialUsed ? 0 : 1;
+  return {
+    ...billing,
+    freeCredits,
+    totalAvailable: freeCredits + billing.paidCredits,
+    nextUseLabel: freeCredits > 0 ? '免费试用' : `${billing.priceYuan} 元/次`,
+  };
+}
+
+export function addPaidCredit(workspace, count = 1) {
+  const billing = getBillingState(workspace);
+  return {
+    ...workspace,
+    settings: {
+      ...workspace.settings,
+      billing: {
+        freeTrialUsed: billing.freeTrialUsed,
+        paidCredits: billing.paidCredits + Math.max(1, Number(count) || 1),
+        priceYuan: billing.priceYuan,
+      },
+    },
+  };
+}
+
+export function consumeAiCredit(workspace) {
+  const billing = getBillingState(workspace);
+  if (billing.freeCredits > 0) {
+    return {
+      allowed: true,
+      reason: 'free',
+      workspace: {
+        ...workspace,
+        settings: {
+          ...workspace.settings,
+          billing: {
+            freeTrialUsed: true,
+            paidCredits: billing.paidCredits,
+            priceYuan: billing.priceYuan,
+          },
+        },
+      },
+    };
+  }
+
+  if (billing.paidCredits > 0) {
+    return {
+      allowed: true,
+      reason: 'paid',
+      workspace: {
+        ...workspace,
+        settings: {
+          ...workspace.settings,
+          billing: {
+            freeTrialUsed: true,
+            paidCredits: billing.paidCredits - 1,
+            priceYuan: billing.priceYuan,
+          },
+        },
+      },
+    };
+  }
+
+  return {
+    allowed: false,
+    reason: 'payment-required',
+    workspace,
   };
 }
 
